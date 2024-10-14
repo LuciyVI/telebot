@@ -6,7 +6,7 @@ import random
 import time
 
 import re
-import sqlite3
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
@@ -18,6 +18,8 @@ import asyncio
 import socket
 import io
 
+import db,backend
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Замените на ваш токен
@@ -26,132 +28,14 @@ dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
 # Путь к файлу базы данных SQLite
-DATABASE = '/etc/scripts/bot_data.db'  # Укажите полный путь при необходимости
+
 
 # Инициализация планировщика
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-def init_db():
-    print("Initializing database...")
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            user_id INTEGER PRIMARY KEY,
-            container_id TEXT NOT NULL,
-            expiry_time DATETIME NOT NULL,
-            config BLOB,
-            used_trial BOOLEAN DEFAULT 0  -- Новое поле для отметки использования бесплатного конфига
-        )
-    ''')
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS used_numbers (
-            number INTEGER PRIMARY KEY
-        )
-    ''')
-
-    conn.commit()
-    conn.close()
-    print("Database initialized.")
-
-def add_user(user_id, container_id, expiry_time, config):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO users (user_id, container_id, expiry_time, config, used_trial) VALUES (?, ?, ?, ?, ?)
-    ''', (user_id, container_id, expiry_time, config, True))  # Устанавливаем used_trial в True
-    conn.commit()
-    conn.close()
-
-def user_exists(user_id):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM users WHERE user_id = ?', (user_id,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
-
-def has_used_trial(user_id):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT used_trial FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        return result[0] == 1
-    else:
-        return False
-
-def get_user_config(user_id):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT config FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        return result[0]
-    else:
-        return None
-
-def get_user_container_id(user_id):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT container_id FROM users WHERE user_id = ?', (user_id,))
-    result = cursor.fetchone()
-    conn.close()
-    if result:
-        return result[0]
-    else:
-        return None
-
-def remove_user(user_id):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
-    conn.commit()
-    conn.close()
-
-def user_has_trial(user_id,container_id, expiration_time_str, config, is_paid):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT OR REPLACE INTO users (
-            user_id, container_id, expiration_time, config, is_paid, has_used_trial
-        )
-        VALUES (?, ?, ?, ?, ?, ?)
-    ''', (user_id, container_id, expiration_time_str, config, is_paid, has_used_trial))
-    conn.commit()
-
-def add_used_number(number):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('''
-        INSERT INTO used_numbers (number) VALUES (?)
-    ''', (number,))
-    conn.commit()
-    conn.close()
-
-def is_number_used(number):
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT 1 FROM used_numbers WHERE number = ?', (number,))
-    exists = cursor.fetchone() is not None
-    conn.close()
-    return exists
-
-def get_all_used_numbers():
-    conn = sqlite3.connect(DATABASE)
-    cursor = conn.cursor()
-    cursor.execute('SELECT number FROM used_numbers')
-    numbers = cursor.fetchall()
-    conn.close()
-    return [num[0] for num in numbers]
-
 def get_unique_random_number_in_range(start, end):
-    used_numbers = get_all_used_numbers()
+    used_numbers = db.get_all_used_numbers()
     if len(used_numbers) >= (end - start + 1):
         raise ValueError("All possible numbers in the range have been used.")
 
@@ -160,7 +44,7 @@ def get_unique_random_number_in_range(start, end):
     while random_number in used_numbers:
         random_number = random.randint(start, end)
 
-    add_used_number(random_number)
+    db.add_used_number(random_number)
     return random_number
 
 def add_trial_user(user_id, container_id, config):
@@ -176,7 +60,7 @@ def add_trial_user(user_id, container_id, config):
     expiration_time_str = expiration_time.strftime('%Y-%m-%d %H:%M:%S')
     has_used_trial = 1
     is_paid = 0
-    user_has_trial(user_id, container_id, expiration_time_str, config, is_paid)
+    
 
     # Schedule container access blocking after 20 minutes
     scheduler.add_job(
@@ -307,10 +191,10 @@ async def handle_buy(message: types.Message):
 async def handle_trial(message: types.Message):
     user_id = message.chat.id
 
-    if has_used_trial(user_id):
+    if db.has_used_trial(user_id):
         # Пользователь уже использовал бесплатный конфиг
         await message.answer("Вы уже использовали бесплатный пробный конфиг. Отправляю ваш ранее выданный конфиг.")
-        user_config = get_user_config(user_id)
+        user_config = db.get_user_config(user_id)
         if user_config:
             await message.answer_document(InputFile(io.BytesIO(user_config), filename="trial.ovpn"))
         else:
@@ -320,12 +204,11 @@ async def handle_trial(message: types.Message):
     
 
     try:
-        container_suffix = get_unique_random_number_in_range(1, 1000)
+        container_suffix = get_unique_random_number_in_range(1, 100)
         port_443 = get_unique_random_number_in_range(5000, 6000)
         port_943 = get_unique_random_number_in_range(7000, 8000)
         port_1194_udp = get_unique_random_number_in_range(8000, 9000)
-        
-        container = await run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
+        container = await backend.run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
         if container is None:
             await message.answer("Failed to create container. Please try again later.")
             return
@@ -333,18 +216,18 @@ async def handle_trial(message: types.Message):
         container_id = container.short_id
 
         # Schedule container deletion after 20 minutes
-        scheduler.add_job(delete_container, 'date', run_date=datetime.now() + timedelta(minutes=20), args=[container_id, user_id])
+        scheduler.add_job(backend.delete_container, 'date', run_date=datetime.now() + timedelta(minutes=20), args=[container_id, user_id])
 
         # Wait for the container service to start
         # await asyncio.sleep(15)  # Adjust as necessary
 
-        config = await create_openvpn_config(container_id)
+        config = await backend.create_openvpn_config(container_id)
         if config is None:
             await message.answer("Error generating configuration. Please try again later.")
             return
 
         # Save the config in the database and mark the user as having used the free config
-        add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
+        db.add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
 
         await message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
         await message.answer("Your free trial config has been created and will be valid for 20 minutes.")
@@ -374,95 +257,95 @@ async def handle_support(message: types.Message):
     support_text = "Свяжитесь с нашей поддержкой по электронной почте: support@example.com"
     await message.answer(support_text)
 
-async def create_openvpn_config(trial=False):
-    """
-    Генерация OpenVPN конфигурации с подстановкой корректных портов и IP-адресов.
-    Включает аутентификацию с использованием имени пользователя и пароля, получаемого из логов контейнера.
-    """
-    client = docker.from_env()
+# async def create_openvpn_config(trial=False):
+#     """
+#     Генерация OpenVPN конфигурации с подстановкой корректных портов и IP-адресов.
+#     Включает аутентификацию с использованием имени пользователя и пароля, получаемого из логов контейнера.
+#     """
+#     client = docker.from_env()
 
-    # Получаем ID последнего запущенного контейнера
-    container_id = (await get_running_containers_info('id'))[-1]
-    container = client.containers.get(container_id)
+#     # Получаем ID последнего запущенного контейнера
+#     container_id = (await get_running_containers_info('id'))[-1]
+#     container = client.containers.get(container_id)
 
-    # Получаем информацию о портах контейнера
-    container_ports = container.attrs['NetworkSettings']['Ports']
+#     # Получаем информацию о портах контейнера
+#     container_ports = container.attrs['NetworkSettings']['Ports']
     
-    # Получаем значение внешнего UDP порта
-    internal_port_udp = f"{1194}/udp"
-    connect_port_udp = container_ports.get(internal_port_udp, [])
-    connect_port_udp_value = connect_port_udp[0]['HostPort'] if connect_port_udp else None
+#     # Получаем значение внешнего UDP порта
+#     internal_port_udp = f"{1194}/udp"
+#     connect_port_udp = container_ports.get(internal_port_udp, [])
+#     connect_port_udp_value = connect_port_udp[0]['HostPort'] if connect_port_udp else None
 
-    # Получаем значение внешнего TCP порта
-    internal_port_tcp = f"{443}/tcp"
-    connect_port_tcp = container_ports.get(internal_port_tcp, [])
-    connect_port_tcp_value = connect_port_tcp[0]['HostPort'] if connect_port_tcp else None
+#     # Получаем значение внешнего TCP порта
+#     internal_port_tcp = f"{443}/tcp"
+#     connect_port_tcp = container_ports.get(internal_port_tcp, [])
+#     connect_port_tcp_value = connect_port_tcp[0]['HostPort'] if connect_port_tcp else None
     
-    # Внутренний IP адрес контейнера
-    internal_ip = container.attrs['NetworkSettings']['IPAddress']
+#     # Внутренний IP адрес контейнера
+#     internal_ip = container.attrs['NetworkSettings']['IPAddress']
 
-    # URL для обращения к контейнеру по API
-    url = f'https://0.0.0.0:{connect_port_tcp_value}/rest/GetGeneric'
+#     # URL для обращения к контейнеру по API
+#     url = f'https://0.0.0.0:{connect_port_tcp_value}/rest/GetGeneric'
     
-    # Дефолтное имя пользователя OpenVPN
-    username = 'openvpn'
+#     # Дефолтное имя пользователя OpenVPN
+#     username = 'openvpn'
     
-    # Получаем автоматически сгенерированный пароль из логов контейнера
-    password = await parse_container_logs_for_password(container_id)
+#     # Получаем автоматически сгенерированный пароль из логов контейнера
+#     password = await parse_container_logs_for_password(container_id)
 
-    # Выполняем запрос к API контейнера для получения исходной конфигурации
-    response = requests.get(url, auth=HTTPBasicAuth(username, password), verify=False)
-    payload = response.content.decode('utf-8')
+#     # Выполняем запрос к API контейнера для получения исходной конфигурации
+#     response = requests.get(url, auth=HTTPBasicAuth(username, password), verify=False)
+#     payload = response.content.decode('utf-8')
 
-    # Заменяем внутренний IP контейнера на внешний IP сервера
-    modified_payload = payload.replace(internal_ip, '109.120.179.155')
+#     # Заменяем внутренний IP контейнера на внешний IP сервера
+#     modified_payload = payload.replace(internal_ip, '109.120.179.155')
     
-    # Подставляем внешние порты
-    if connect_port_udp_value:
-        modified_payload = modified_payload.replace('1194', connect_port_udp_value)
-    if connect_port_tcp_value:
-        modified_payload = modified_payload.replace('443', connect_port_tcp_value)
+#     # Подставляем внешние порты
+#     if connect_port_udp_value:
+#         modified_payload = modified_payload.replace('1194', connect_port_udp_value)
+#     if connect_port_tcp_value:
+#         modified_payload = modified_payload.replace('443', connect_port_tcp_value)
 
-    # Очищаем конфигурацию от комментариев и ненужных строк
-    cleaned_payload = '\n'.join([line for line in modified_payload.splitlines() if not line.strip().startswith('#')])
+#     # Очищаем конфигурацию от комментариев и ненужных строк
+#     cleaned_payload = '\n'.join([line for line in modified_payload.splitlines() if not line.strip().startswith('#')])
 
-    # Убираем строку "auth-user-pass" из конфигурации
-    cleaned_payload = re.sub(r'auth-user-pass', '', cleaned_payload, flags=re.DOTALL)
+#     # Убираем строку "auth-user-pass" из конфигурации
+#     cleaned_payload = re.sub(r'auth-user-pass', '', cleaned_payload, flags=re.DOTALL)
 
-    # Добавляем секцию с аутентификацией
-    auth_user_pass = f"""
-pull-filter ignore "dhcp-pre-release"
-pull-filter ignore "dhcp-renew"
-pull-filter ignore "dhcp-release"
-pull-filter ignore "register-dns"
-pull-filter ignore "block-ipv6"
-<auth-user-pass>
-openvpn
-{password}
-</auth-user-pass>
-"""
+#     # Добавляем секцию с аутентификацией
+#     auth_user_pass = f"""
+# pull-filter ignore "dhcp-pre-release"
+# pull-filter ignore "dhcp-renew"
+# pull-filter ignore "dhcp-release"
+# pull-filter ignore "register-dns"
+# pull-filter ignore "block-ipv6"
+# <auth-user-pass>
+# openvpn
+# {password}
+# </auth-user-pass>
+# """
     
-    # Формируем финальную конфигурацию
-    final_payload = cleaned_payload + "\n" + auth_user_pass.strip()
+#     # Формируем финальную конфигурацию
+#     final_payload = cleaned_payload + "\n" + auth_user_pass.strip()
     
-    # Кодируем строку в байты для отправки как файл
-    encoded_payload = final_payload.encode('utf-8')
-    return encoded_payload
+#     # Кодируем строку в байты для отправки как файл
+#     encoded_payload = final_payload.encode('utf-8')
+#     return encoded_payload
 
-async def delete_container(container_id, user_id):
-    client = docker.from_env()
-    try:
-        container = client.containers.get(container_id)
-        container.stop()
-        container.remove()
-        print(f"Container {container_id} has been deleted after 20 minutes.")
-        # Удаляем пользователя из базы данных
-        remove_user(user_id)
-    except docker.errors.NotFound:
-        print(f"Container {container_id} not found for deletion.")
-    except Exception as e:
-        print(f"Error deleting container {container_id}: {str(e)}")
+# async def delete_container(container_id, user_id):
+#     client = docker.from_env()
+#     try:
+#         container = client.containers.get(container_id)
+#         container.stop()
+#         container.remove()
+#         print(f"Container {container_id} has been deleted after 20 minutes.")
+#         # Удаляем пользователя из базы данных
+#         remove_user(user_id)
+#     except docker.errors.NotFound:
+#         print(f"Container {container_id} not found for deletion.")
+#     except Exception as e:
+#         print(f"Error deleting container {container_id}: {str(e)}")
 
 if __name__ == "__main__":
-    init_db()
+    db.init_db()
     executor.start_polling(dp)
