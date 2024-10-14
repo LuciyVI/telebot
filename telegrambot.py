@@ -3,6 +3,8 @@ from requests.auth import HTTPBasicAuth
 import urllib3
 import docker
 import random
+import time
+
 import re
 import sqlite3
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -18,15 +20,15 @@ import io
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Replace with your token
+TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Замените на ваш токен
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# Path to the SQLite database file
-DATABASE = '/etc/scripts/bot_data.db'  # Specify full path if necessary
+# Путь к файлу базы данных SQLite
+DATABASE = '/etc/scripts/bot_data.db'  # Укажите полный путь при необходимости
 
-# Scheduler initialization
+# Инициализация планировщика
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
@@ -34,31 +36,33 @@ def init_db():
     print("Initializing database...")
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
             container_id TEXT NOT NULL,
-            expiry_time DATETIME NOT NULL
+            expiry_time DATETIME NOT NULL,
+            config BLOB,
+            used_trial BOOLEAN DEFAULT 0  -- Новое поле для отметки использования бесплатного конфига
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS used_numbers (
             number INTEGER PRIMARY KEY
         )
     ''')
-    
+
     conn.commit()
     conn.close()
     print("Database initialized.")
 
-def add_user(user_id, container_id, expiry_time):
+def add_user(user_id, container_id, expiry_time, config):
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     cursor.execute('''
-        INSERT INTO users (user_id, container_id, expiry_time) VALUES (?, ?, ?)
-    ''', (user_id, container_id, expiry_time))
+        INSERT INTO users (user_id, container_id, expiry_time, config, used_trial) VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, container_id, expiry_time, config, True))  # Устанавливаем used_trial в True
     conn.commit()
     conn.close()
 
@@ -70,12 +74,56 @@ def user_exists(user_id):
     conn.close()
     return exists
 
+def has_used_trial(user_id):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT used_trial FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0] == 1
+    else:
+        return False
+
+def get_user_config(user_id):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT config FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    else:
+        return None
+
+def get_user_container_id(user_id):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('SELECT container_id FROM users WHERE user_id = ?', (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    else:
+        return None
+
 def remove_user(user_id):
     conn = sqlite3.connect(DATABASE)
     cursor = conn.cursor()
     cursor.execute('DELETE FROM users WHERE user_id = ?', (user_id,))
     conn.commit()
     conn.close()
+
+def user_has_trial(user_id,container_id, expiration_time_str, config, is_paid):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    cursor.execute('''
+        INSERT OR REPLACE INTO users (
+            user_id, container_id, expiration_time, config, is_paid, has_used_trial
+        )
+        VALUES (?, ?, ?, ?, ?, ?)
+    ''', (user_id, container_id, expiration_time_str, config, is_paid, has_used_trial))
+    conn.commit()
 
 def add_used_number(number):
     conn = sqlite3.connect(DATABASE)
@@ -106,23 +154,46 @@ def get_unique_random_number_in_range(start, end):
     used_numbers = get_all_used_numbers()
     if len(used_numbers) >= (end - start + 1):
         raise ValueError("All possible numbers in the range have been used.")
-    
+
     random_number = random.randint(start, end)
-    
+
     while random_number in used_numbers:
         random_number = random.randint(start, end)
-    
+
     add_used_number(random_number)
     return random_number
+
+def add_trial_user(user_id, container_id, config):
+    """
+    Adds a trial user to the database with a 20-minute expiration time.
+
+    Args:
+        user_id (int): The Telegram user ID.
+        container_id (str): The ID of the Docker container associated with the user.
+        config (bytes): The OpenVPN configuration file as bytes.
+    """
+    expiration_time = datetime.now() + timedelta(minutes=20)
+    expiration_time_str = expiration_time.strftime('%Y-%m-%d %H:%M:%S')
+    has_used_trial = 1
+    is_paid = 0
+    user_has_trial(user_id, container_id, expiration_time_str, config, is_paid)
+
+    # Schedule container access blocking after 20 minutes
+    scheduler.add_job(
+        block_container_access,
+        'date',
+        run_date=expiration_time,
+        args=[container_id]
+    )
 
 async def run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp):
     client = docker.from_env()
     container_name = f"openvpn-as{container_suffix}"
-    volume_path = f"/etc/openvpn{container_suffix}"
+    volume_path = f"/etc/openvpn{container_suffix}"  # Убедитесь, что этот путь доступен для записи
 
     try:
         container = client.containers.run(
-            image="b0721bd08080",  # Replace with actual container image
+            image="openvpn/openvpn-as",  # Используйте актуальный образ
             name=container_name,
             cap_add=["NET_ADMIN"],
             detach=True,
@@ -132,7 +203,7 @@ async def run_openvpn_container(container_suffix, port_443, port_943, port_1194_
                 f'{1194}/udp': port_1194_udp
             },
             volumes={
-                volume_path: {'bind': '/openvpn', 'mode': 'rw'}
+                volume_path: {'bind': '/etc/openvpn', 'mode': 'rw'}
             }
         )
         print(f"Container {container_name} started.")
@@ -143,25 +214,38 @@ async def run_openvpn_container(container_suffix, port_443, port_943, port_1194_
         print(f"Image not found: {e}")
     except docker.errors.APIError as e:
         print(f"Docker API error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    return None
 
 async def parse_container_logs_for_password(container_id):
     client = docker.from_env()
-    
+
     try:
         container = client.containers.get(container_id)
         logs = container.logs().decode('utf-8')
 
-        password_match = re.search(r'Auto-generated pass = "(.+?)"', logs)
+        password_match = re.search(r'Admin UI Password: (.+)', logs)
 
         if password_match:
-            return password_match.group(1)
+            return password_match.group(1).strip()
         else:
             return "No matching password found in the container logs."
     except docker.errors.NotFound:
         return f"Container {container_id} not found."
     except Exception as e:
         return f"Error occurred: {str(e)}"
-
+    
+def wait_for_port(port, host='localhost', timeout=60):
+    start_time = time.time()
+    while True:
+        try:
+            with socket.create_connection((host, port), timeout=5):
+                return True
+        except OSError:
+            time.sleep(1)
+            if time.time() - start_time >= timeout:
+                return False
 async def get_running_containers_info(type_info):
     client = docker.from_env()
     containers_info = []
@@ -183,6 +267,23 @@ async def get_running_containers_info(type_info):
             containers_info.append(None)
 
     return containers_info
+
+def block_container_access(container_id):
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_id)
+        container.stop()
+        # Update the database to indicate that access has been blocked
+        conn = sqlite3.connect(DATABASE)
+        conn.execute('''
+            UPDATE users SET access_blocked = 1 WHERE container_id = ?
+        ''', (container_id,))
+        conn.commit()
+        print(f"Access to container {container_id} has been blocked after the trial period.")
+    except Exception as e:
+        print(f"Error stopping container {container_id}: {e}")
+
+
 
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
@@ -206,55 +307,71 @@ async def handle_buy(message: types.Message):
 async def handle_trial(message: types.Message):
     user_id = message.chat.id
 
-    if user_exists(user_id):
-        await message.answer("You have already used the free trial config.")
+    if has_used_trial(user_id):
+        # Пользователь уже использовал бесплатный конфиг
+        await message.answer("Вы уже использовали бесплатный пробный конфиг. Отправляю ваш ранее выданный конфиг.")
+        user_config = get_user_config(user_id)
+        if user_config:
+            await message.answer_document(InputFile(io.BytesIO(user_config), filename="trial.ovpn"))
+        else:
+            await message.answer("Ошибка при получении вашего конфига.")
         return
-
-    container_id = None
+    # container_id = None
+    
 
     try:
-        container_suffix = get_unique_random_number_in_range(1, 100)
+        container_suffix = get_unique_random_number_in_range(1, 1000)
         port_443 = get_unique_random_number_in_range(5000, 6000)
         port_943 = get_unique_random_number_in_range(7000, 8000)
         port_1194_udp = get_unique_random_number_in_range(8000, 9000)
         
         container = await run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
+        if container is None:
+            await message.answer("Failed to create container. Please try again later.")
+            return
+
         container_id = container.short_id
-        
-        config = await create_openvpn_config(trial=True)
+
+        # Schedule container deletion after 20 minutes
+        scheduler.add_job(delete_container, 'date', run_date=datetime.now() + timedelta(minutes=20), args=[container_id, user_id])
+
+        # Wait for the container service to start
+        # await asyncio.sleep(15)  # Adjust as necessary
+
+        config = await create_openvpn_config(container_id)
+        if config is None:
+            await message.answer("Error generating configuration. Please try again later.")
+            return
+
+        # Save the config in the database and mark the user as having used the free config
+        add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
+
         await message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
-
-        expiry_time = datetime.now() + timedelta(hours=24)
-        add_user(user_id, container_id, expiry_time)
-
+        await message.answer("Your free trial config has been created and will be valid for 20 minutes.")
+    
     except Exception as e:
         print(f"Error creating container: {e}")
         await message.answer("An error occurred while creating the container.")
         return
 
-    if container_id:
-        await message.answer(f"Your free trial config has been created. Container ID: {container_id}")
-    else:
-        await message.answer("Failed to create the container.")
-
+    
 @dp.message_handler(lambda message: message.text == "ℹ️ FAQ")
 async def handle_faq(message: types.Message):
     faq_text = """
     ❓ FAQ:
-    1. How do I set up OpenVPN?
-    - Download the config to your device or router and connect to the VPN.
+    1. Как настроить OpenVPN?
+    - Скачайте конфиг на ваше устройство или роутер и подключитесь к VPN.
 
-    2. How much does the config cost?
-    - Please check the current pricing on our website or contact support.
+    2. Сколько стоит конфиг?
+    - Пожалуйста, ознакомьтесь с актуальными ценами на нашем сайте или свяжитесь со службой поддержки.
 
-    3. Is there a free trial?
-    - Yes, you can get a free trial config.
+    3. Есть ли бесплатный пробный период?
+    - Да, вы можете получить бесплатный пробный конфиг.
     """
     await message.answer(faq_text)
 
-@dp.message_handler(lambda message: message.text == "🛠 Support")
 async def handle_support(message: types.Message):
-    support_text = "Contact our support at this email: support@example.com"
+    support_text = "Свяжитесь с нашей поддержкой по электронной почте: support@example.com"
     await message.answer(support_text)
 
 async def create_openvpn_config(trial=False):
@@ -330,8 +447,22 @@ openvpn
     
     # Кодируем строку в байты для отправки как файл
     encoded_payload = final_payload.encode('utf-8')
-    
     return encoded_payload
+
+async def delete_container(container_id, user_id):
+    client = docker.from_env()
+    try:
+        container = client.containers.get(container_id)
+        container.stop()
+        container.remove()
+        print(f"Container {container_id} has been deleted after 20 minutes.")
+        # Удаляем пользователя из базы данных
+        remove_user(user_id)
+    except docker.errors.NotFound:
+        print(f"Container {container_id} not found for deletion.")
+    except Exception as e:
+        print(f"Error deleting container {container_id}: {str(e)}")
+
 if __name__ == "__main__":
     init_db()
     executor.start_polling(dp)
