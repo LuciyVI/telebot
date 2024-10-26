@@ -176,3 +176,34 @@ async def delete_container(container_id, user_id):
         print(f"Container {container_id} not found for deletion.")
     except Exception as e:
         print(f"Error deleting container {container_id}: {str(e)}")
+async def run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp):
+    client = docker.from_env()
+    container_name = f"openvpn-as{container_suffix}"
+    volume_path = f"/etc/openvpn{container_suffix}"  # Убедитесь, что этот путь доступен для записи
+
+    try:
+        container = client.containers.run(
+            image="openvpn/openvpn-as",  # Используйте актуальный образ
+            name=container_name,
+            cap_add=["NET_ADMIN"],
+            detach=True,
+            ports={
+                f'{443}/tcp': port_443,
+                f'{943}/tcp': port_943,
+                f'{1194}/udp': port_1194_udp
+            },
+            volumes={
+                volume_path: {'bind': '/etc/openvpn', 'mode': 'rw'}
+            }
+        )
+        print(f"Container {container_name} started.")
+        return container
+    except docker.errors.ContainerError as e:
+        print(f"Container error: {e}")
+    except docker.errors.ImageNotFound as e:
+        print(f"Image not found: {e}")
+    except docker.errors.APIError as e:
+        print(f"Docker API error: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+    return None
