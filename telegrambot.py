@@ -15,7 +15,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.types import ParseMode, InputFile
+from aiogram.types import ParseMode, InputFile, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
 
 import asyncio
@@ -28,6 +28,8 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Замените на ваш токен
 PROVIDER_TOKEN = '381764678:TEST:95954'
+CURRENCY='XTR'
+
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
@@ -73,7 +75,7 @@ def add_trial_user(user_id, container_id, config):
         args=[container_id]
     )
     
-def wait_for_port(port, host='localhost', timeout=60):
+def wait_for_port(port, host='0.0.0.0', timeout=60):
     start_time = time.time()
     while True:
         try:
@@ -123,11 +125,14 @@ def block_container_access(container_id):
 
 
 def main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("💳 Купить конфиг")
-    btn2 = types.KeyboardButton("🎁 Попробуй бесплатно")
-    btn3 = types.KeyboardButton("ℹ️ FAQ")
-    btn4 = types.KeyboardButton("🛠 Поддержка")
+    """
+    Создает меню с кнопками InlineKeyboardButton.
+    """
+    markup = InlineKeyboardMarkup(row_width=2)
+    btn1 = InlineKeyboardButton("💳 Купить конфиг", callback_data="buy_config")
+    btn2 = InlineKeyboardButton("🎁 Попробуй бесплатно", callback_data="try_free")
+    btn3 = InlineKeyboardButton("ℹ️ FAQ", callback_data="faq")
+    btn4 = InlineKeyboardButton("🛠 Поддержка", callback_data="support")
     markup.add(btn1, btn2)
     markup.add(btn3, btn4)
     return markup
@@ -136,109 +141,171 @@ def main_menu():
 async def send_welcome(message: types.Message):
     await message.answer("Welcome! Please choose an action:", reply_markup=main_menu())
 
-@dp.message_handler(lambda message: message.text == "💳 Купить конфиг")
-async def send_invoice(message: types.Message):
-    # Устанавливаем параметры счета
+
+# Добавьте токен для Telegram Stars
+
+
+@dp.callback_query_handler(lambda c: c.data == "buy_config")
+async def send_invoice(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Купить конфиг" с выбором способа оплаты.
+    """
+    # Создаем клавиатуру для выбора способа оплаты
+    markup = InlineKeyboardMarkup(row_width=2)
+    btn_yookassa = InlineKeyboardButton("💳 Юкасса", callback_data="pay_yookassa")
+    btn_stars = InlineKeyboardButton("🌟 Telegram Stars", callback_data="pay_stars")
+    markup.add(btn_yookassa, btn_stars)
+
+    await callback_query.message.answer(
+        "Выберите способ оплаты:", 
+        reply_markup=markup
+    )
+    await callback_query.answer()  # Закрываем уведомление о нажатии кнопки
+
+
+@dp.callback_query_handler(lambda c: c.data == "pay_yookassa")
+async def send_yookassa_invoice(callback_query: types.CallbackQuery):
+    """
+    Обработчик для оплаты через Юкасса.
+    """
     title = "Подписка на сервис"
     description = "Описание товара или услуги, например, подписка на 1 месяц"
     payload = "subscription_payload"  # Уникальный идентификатор для инвойса
     currency = "RUB"  # Код валюты
     prices = [LabeledPrice(label="Подписка на 1 месяц", amount=10000)]  # Цена в копейках (10000 = 100 рублей)
 
-    # Отправка счета пользователю
     await bot.send_invoice(
-        chat_id=message.chat.id,
+        chat_id=callback_query.message.chat.id,
         title=title,
         description=description,
         payload=payload,
         provider_token=PROVIDER_TOKEN,
-        currency=currency,
+        currency=CURRENCY,
         prices=prices,
-        start_parameter="test-payment"
+        start_parameter="yookassa-payment"
     )
+    await callback_query.answer()  # Закрываем уведомление о нажатии кнопки
 
+
+@dp.callback_query_handler(lambda c: c.data == "pay_stars")
+async def send_stars_invoice(callback_query: types.CallbackQuery):
+    """
+    Обработчик для оплаты через Telegram Stars.
+    """
+    # Создаем клавиатуру
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("Оплатить", pay=True))  # Кнопка с функцией оплаты
+
+    title = "Подписка через Telegram Stars"
+    prices = [LabeledPrice(label="XTR", amount=2000)]  # Сумма указывается в копейках/центах (XTR * 100)
+    await bot.send_invoice(
+        chat_id=callback_query.from_user.id,  # Отправляем счет пользователю
+        title=title,
+        description="Поддержать канал на 20 звёзд!",
+        payload="channel_support",
+        provider_token="",  # Укажите ваш токен платежного провайдера
+        currency="XTR",
+        prices=prices,
+        reply_markup=keyboard,  # Указываем клавиатуру
+    )
+    await callback_query.answer()  # Закрываем уведомление о нажатии кнопки
 
 @dp.pre_checkout_query_handler(lambda query: True)
 async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
     # Подтверждаем предоплату
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
     
-    
-@dp.message_handler(lambda message: message.text == "🎁 Попробуй бесплатно")
-async def handle_trial(message: types.Message):
-    user_id = message.chat.id
+
+@dp.callback_query_handler(lambda c: c.data == "try_free")
+async def handle_trial(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id  # Получаем ID пользователя из callback_query
 
     if db.has_used_trial(user_id):
         # Пользователь уже использовал бесплатный конфиг
-        await message.answer("Вы уже использовали бесплатный пробный конфиг. Отправляю ваш ранее выданный конфиг.")
         user_config = db.get_user_config(user_id)
         if user_config:
-            await message.answer_document(InputFile(io.BytesIO(user_config), filename="trial.ovpn"))
+            await callback_query.message.answer_document(InputFile(io.BytesIO(user_config), filename="trial.ovpn"))
         else:
-            await message.answer("Ошибка при получении вашего конфига.")
-        return
-    # container_id = None
+            await callback_query.message.answer("Ошибка при получении вашего конфига.")
+    else:
+        try:
+            container_suffix = get_unique_random_number_in_range(1, 100)
+            port_443 = get_unique_random_number_in_range(5000, 6000)
+            port_943 = get_unique_random_number_in_range(7000, 8000)
+            port_1194_udp = get_unique_random_number_in_range(8000, 9000)
+
+            # Создаем контейнер
+            container = await backend.run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
+            if container is None:
+                await callback_query.message.answer("Произошла ошибка. Повторите попытку позже или обратитесь в поддержку.")
+                return
+
+            container_id = container.short_id
+
+            # Планируем удаление контейнера через 20 минут
+            scheduler.add_job(
+                backend.delete_container, 
+                'date', 
+                run_date=datetime.now() + timedelta(minutes=20), 
+                args=[container_id, user_id]
+            )
+
+            # Генерация OpenVPN-конфига
+            config = await backend.create_openvpn_config(container_id)
+            if config is None:
+                await callback_query.message.answer("Произошла ошибка. Повторите попытку позже или обратитесь в поддержку.")
+                return
+
+            # Сохраняем данные о пользователе в БД
+            db.add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
+
+            # Отправляем конфиг пользователю
+            await callback_query.message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
+            await callback_query.message.answer("Попробуйте наш пробный доступ в течение 20 минут.")
+        except Exception as e:
+            print(f"Error creating container: {e}")
+            await callback_query.message.answer("Произошла ошибка при создании контейнера.")
+    await callback_query.answer()  # Закрываем уведомление о нажатии кнопки
+
     
-
-    try:
-        container_suffix = get_unique_random_number_in_range(1, 100)
-        port_443 = get_unique_random_number_in_range(5000, 6000)
-        port_943 = get_unique_random_number_in_range(7000, 8000)
-        port_1194_udp = get_unique_random_number_in_range(8000, 9000)
-        container = await backend.run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
-        if container is None:
-            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
-            return
-
-        container_id = container.short_id
-
-        # Schedule container deletion after 20 minutes
-        scheduler.add_job(backend.delete_container, 'date', run_date=datetime.now() + timedelta(minutes=20), args=[container_id, user_id])
-
-        # Wait for the container service to start
-        # await asyncio.sleep(15)  # Adjust as necessary
-
-        config = await backend.create_openvpn_config(container_id)
-        if config is None:
-            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
-            return
-
-        # Save the config in the database and mark the user as having used the free config
-        db.add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
-
-        await message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
-        await message.answer("Попробуйте наш пробный доступ в течении 3 часов на любом устройстве")
-    
-    except Exception as e:
-        print(f"Error creating container: {e}")
-        await message.answer("An error occurred while creating the container.")
-        return
-
-    
-@dp.message_handler(lambda message: message.text == "ℹ️ FAQ")
-async def handle_faq(message: types.Message):
+@dp.callback_query_handler(lambda c: c.data == "faq")
+async def handle_faq(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "ℹ️ FAQ".
+    """
     faq_text = """
     ❓ FAQ:
     1. Как настроить наш VPN на телефоне?
-    - Скачайте приложение OpenVPN на ваше мобильное устройство из Google play или AppStore
-       https://apps.apple.com/ru/app/openvpn-connect-openvpn-app/id590379981
-       https://play.google.com/store/apps/developer?id=OpenVPN
-    - Импортируйте конфиг в приложение и запустите, ввод логина и пароля не требуется 
-    4. Можно ли настроить наш VPN на роутре?
-    - Да, можно. Ключевой особенностью нашего сервиса является простая настройка на роутерах keenetic
+       - Скачайте приложение OpenVPN на ваше мобильное устройство из Google Play или App Store:
+         https://apps.apple.com/ru/app/openvpn-connect-openvpn-app/id590379981
+         https://play.google.com/store/apps/developer?id=OpenVPN
+       - Импортируйте конфиг в приложение и подключитесь.
+
+    2. Можно ли настроить наш VPN на роутере?
+       - Да, наш сервис поддерживает настройку на роутерах Keenetic.
+
     3. Сколько стоит наш VPN?
-    - 1 месяц - 300 рублей
-    - 6 месяцев - 1700 рублей
-    - 1 год - 3450 рублей
+       - 1 месяц: 300 рублей.
+       - 6 месяцев: 1700 рублей.
+       - 1 год: 3450 рублей.
 
     4. Есть ли бесплатный пробный период?
-    - Да, вы можете получить бесплатный пробный дотсуп на 3 часа 
+       - Да, вы можете получить бесплатный доступ на 20 минут.
     """
-    await message.answer(faq_text)
+    await callback_query.message.answer(faq_text)  # Используем callback_query.message.answer()
+    await callback_query.answer()  # Закрываем уведомление
 
-async def handle_support(message: types.Message):
-    support_text = "Если возникли проблемы напишите в поддержку @PerryPetr"
-    await message.answer(support_text)
+
+
+@dp.callback_query_handler(lambda c: c.data == "support")
+async def handle_support(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Поддержка".
+    """
+    support_text = "Если возникли проблемы, напишите в поддержку: @PerryPetr"
+    await callback_query.message.answer(support_text)  # Используем callback_query.message.answer()
+    await callback_query.answer()  # Закрываем уведомление
+
 
 if __name__ == "__main__":
     db.init_db()

@@ -31,6 +31,7 @@ async def create_openvpn_config(trial=False):
 
     # URL для обращения к контейнеру по API
     url = f'https://0.0.0.0:{connect_port_tcp_value}/rest/GetGeneric'
+    print("URL: = ", url)
     
     # Дефолтное имя пользователя OpenVPN
     username = 'openvpn'
