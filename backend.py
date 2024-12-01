@@ -39,6 +39,7 @@ async def create_openvpn_config(trial=False):
     password = await parse_container_logs_for_password(container_id)
 
     # Выполняем запрос к API контейнера для получения исходной конфигурации
+
     response = requests.get(url, auth=HTTPBasicAuth(username, password), verify=False)
     payload = response.content.decode('utf-8')
 
@@ -171,7 +172,7 @@ async def delete_container(container_id, user_id):
         container.remove()
         print(f"Container {container_id} has been deleted after 20 minutes.")
         # Удаляем пользователя из базы данных
-        remove_user(user_id)
+        
     except docker.errors.NotFound:
         print(f"Container {container_id} not found for deletion.")
     except Exception as e:

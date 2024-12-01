@@ -124,10 +124,10 @@ def block_container_access(container_id):
 
 def main_menu():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("💳 Buy config")
-    btn2 = types.KeyboardButton("🎁 Free trial config")
+    btn1 = types.KeyboardButton("💳 Купить конфиг")
+    btn2 = types.KeyboardButton("🎁 Попробуй бесплатно")
     btn3 = types.KeyboardButton("ℹ️ FAQ")
-    btn4 = types.KeyboardButton("🛠 Support")
+    btn4 = types.KeyboardButton("🛠 Поддержка")
     markup.add(btn1, btn2)
     markup.add(btn3, btn4)
     return markup
@@ -136,7 +136,7 @@ def main_menu():
 async def send_welcome(message: types.Message):
     await message.answer("Welcome! Please choose an action:", reply_markup=main_menu())
 
-@dp.message_handler(lambda message: message.text == "💳 Buy config")
+@dp.message_handler(lambda message: message.text == "💳 Купить конфиг")
 async def send_invoice(message: types.Message):
     # Устанавливаем параметры счета
     title = "Подписка на сервис"
@@ -164,7 +164,7 @@ async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery)
     await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
     
     
-@dp.message_handler(lambda message: message.text == "🎁 Free trial config")
+@dp.message_handler(lambda message: message.text == "🎁 Попробуй бесплатно")
 async def handle_trial(message: types.Message):
     user_id = message.chat.id
 
@@ -187,7 +187,7 @@ async def handle_trial(message: types.Message):
         port_1194_udp = get_unique_random_number_in_range(8000, 9000)
         container = await backend.run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
         if container is None:
-            await message.answer("Failed to create container. Please try again later.")
+            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
             return
 
         container_id = container.short_id
@@ -200,14 +200,14 @@ async def handle_trial(message: types.Message):
 
         config = await backend.create_openvpn_config(container_id)
         if config is None:
-            await message.answer("Error generating configuration. Please try again later.")
+            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
             return
 
         # Save the config in the database and mark the user as having used the free config
         db.add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
 
         await message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
-        await message.answer("Your free trial config has been created and will be valid for 20 minutes.")
+        await message.answer("Попробуйте наш пробный доступ в течении 3 часов на любом устройстве")
     
     except Exception as e:
         print(f"Error creating container: {e}")
@@ -219,19 +219,25 @@ async def handle_trial(message: types.Message):
 async def handle_faq(message: types.Message):
     faq_text = """
     ❓ FAQ:
-    1. Как настроить OpenVPN?
-    - Скачайте конфиг на ваше устройство или роутер и подключитесь к VPN.
+    1. Как настроить наш VPN на телефоне?
+    - Скачайте приложение OpenVPN на ваше мобильное устройство из Google play или AppStore
+       https://apps.apple.com/ru/app/openvpn-connect-openvpn-app/id590379981
+       https://play.google.com/store/apps/developer?id=OpenVPN
+    - Импортируйте конфиг в приложение и запустите, ввод логина и пароля не требуется 
+    4. Можно ли настроить наш VPN на роутре?
+    - Да, можно. Ключевой особенностью нашего сервиса является простая настройка на роутерах keenetic
+    3. Сколько стоит наш VPN?
+    - 1 месяц - 300 рублей
+    - 6 месяцев - 1700 рублей
+    - 1 год - 3450 рублей
 
-    2. Сколько стоит конфиг?
-    - Пожалуйста, ознакомьтесь с актуальными ценами на нашем сайте или свяжитесь со службой поддержки.
-
-    3. Есть ли бесплатный пробный период?
-    - Да, вы можете получить бесплатный пробный конфиг.
+    4. Есть ли бесплатный пробный период?
+    - Да, вы можете получить бесплатный пробный дотсуп на 3 часа 
     """
     await message.answer(faq_text)
 
 async def handle_support(message: types.Message):
-    support_text = "Свяжитесь с нашей поддержкой по электронной почте: support@example.com"
+    support_text = "Если возникли проблемы напишите в поддержку @PerryPetr"
     await message.answer(support_text)
 
 if __name__ == "__main__":
