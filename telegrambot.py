@@ -4,242 +4,212 @@ import urllib3
 import docker
 import random
 import time
-
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import LabeledPrice
-
-import re
-
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.types import ParseMode, InputFile
-from aiogram.utils import executor
-
 import asyncio
 import socket
 import io
 
-import db,backend
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.types import ParseMode, InputFile, InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice, ChatActions, PreCheckoutQuery
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from datetime import datetime, timedelta
+
+import db  # Взаимодействие с базой данных
+import backend  # Управление контейнерами и конфигурацией
+
+# Отключение предупреждений urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Замените на ваш токен
-PROVIDER_TOKEN = '381764678:TEST:95954'
+# Конфигурация
+TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Вставьте токен вашего бота
+PROVIDER_TOKEN = '381764678:TEST:95954'  # Токен для платежей
+CURRENCY = 'RUB'  # Валюта
+
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
-# Инициализация планировщика
+# Планировщик задач
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-def get_unique_random_number_in_range(start, end):
-    used_numbers = db.get_all_used_numbers()
-    if len(used_numbers) >= (end - start + 1):
-        raise ValueError("All possible numbers in the range have been used.")
 
-    random_number = random.randint(start, end)
-
-    while random_number in used_numbers:
-        random_number = random.randint(start, end)
-
-    db.add_used_number(random_number)
-    return random_number
-
-def add_trial_user(user_id, container_id, config):
+def main_menu(user_id: int):
     """
-    Adds a trial user to the database with a 20-minute expiration time.
-
-    Args:
-        user_id (int): The Telegram user ID.
-        container_id (str): The ID of the Docker container associated with the user.
-        config (bytes): The OpenVPN configuration file as bytes.
+    Генерация главного меню.
     """
-    expiration_time = datetime.now() + timedelta(minutes=20)
-    expiration_time_str = expiration_time.strftime('%Y-%m-%d %H:%M:%S')
-    has_used_trial = 1
-    is_paid = 0
-    
-
-    # Schedule container access blocking after 20 minutes
-    scheduler.add_job(
-        block_container_access,
-        'date',
-        run_date=expiration_time,
-        args=[container_id]
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💳 Купить конфиг", callback_data="buy_config"),
+        InlineKeyboardButton("🎁 Попробуй бесплатно", callback_data="try_free")
     )
-    
-def wait_for_port(port, host='localhost', timeout=60):
-    start_time = time.time()
-    while True:
-        try:
-            with socket.create_connection((host, port), timeout=5):
-                return True
-        except OSError:
-            time.sleep(1)
-            if time.time() - start_time >= timeout:
-                return False
-async def get_running_containers_info(type_info):
-    client = docker.from_env()
-    containers_info = []
+    markup.add(
+        InlineKeyboardButton("ℹ️ FAQ", callback_data="faq"),
+        InlineKeyboardButton("🛠 Поддержка", callback_data="support")
+    )
 
-    containers = client.containers.list()
+    if db.is_admin(user_id):
+        markup.add(InlineKeyboardButton("🔧 Админ-панель", callback_data="admin_panel"))
 
-    for container in containers:
-        container_data = {
-            'id': container.short_id,
-            'name': container.name,
-            'ports': container.ports,
-            'status': container.status,
-            'image': container.image.tags
-        }
-
-        if type_info in container_data:
-            containers_info.append(container_data[type_info])
-        else:
-            containers_info.append(None)
-
-    return containers_info
-
-def block_container_access(container_id):
-    client = docker.from_env()
-    try:
-        container = client.containers.get(container_id)
-        container.stop()
-        # Update the database to indicate that access has been blocked
-        conn = sqlite3.connect(DATABASE)
-        conn.execute('''
-            UPDATE users SET access_blocked = 1 WHERE container_id = ?
-        ''', (container_id,))
-        conn.commit()
-        print(f"Access to container {container_id} has been blocked after the trial period.")
-    except Exception as e:
-        print(f"Error stopping container {container_id}: {e}")
-
-
-
-def main_menu():
-    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    btn1 = types.KeyboardButton("💳 Купить конфиг")
-    btn2 = types.KeyboardButton("🎁 Попробуй бесплатно")
-    btn3 = types.KeyboardButton("ℹ️ FAQ")
-    btn4 = types.KeyboardButton("🛠 Поддержка")
-    markup.add(btn1, btn2)
-    markup.add(btn3, btn4)
     return markup
+
 
 @dp.message_handler(commands=['start'])
 async def send_welcome(message: types.Message):
-    await message.answer("Welcome! Please choose an action:", reply_markup=main_menu())
+    """
+    Обработчик команды /start.
+    """
+    user_id = message.from_user.id
+    await message.answer("Добро пожаловать! Выберите действие:", reply_markup=main_menu(user_id))
 
-@dp.message_handler(lambda message: message.text == "💳 Купить конфиг")
-async def send_invoice(message: types.Message):
-    # Устанавливаем параметры счета
-    title = "Подписка на сервис"
-    description = "Описание товара или услуги, например, подписка на 1 месяц"
-    payload = "subscription_payload"  # Уникальный идентификатор для инвойса
-    currency = "RUB"  # Код валюты
-    prices = [LabeledPrice(label="Подписка на 1 месяц", amount=10000)]  # Цена в копейках (10000 = 100 рублей)
 
-    # Отправка счета пользователю
-    await bot.send_invoice(
-        chat_id=message.chat.id,
-        title=title,
-        description=description,
-        payload=payload,
-        provider_token=PROVIDER_TOKEN,
-        currency=currency,
-        prices=prices,
-        start_parameter="test-payment"
+@dp.callback_query_handler(lambda c: c.data == "buy_config")
+async def send_payment_options(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Купить конфиг".
+    """
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("💳 Юкасса", callback_data="pay_yookassa"),
+        InlineKeyboardButton("🌟 Telegram Stars", callback_data="pay_stars")
     )
+    await callback_query.message.answer("Выберите способ оплаты:", reply_markup=markup)
+    await callback_query.answer()
 
 
-@dp.pre_checkout_query_handler(lambda query: True)
-async def process_pre_checkout_query(pre_checkout_query: types.PreCheckoutQuery):
-    # Подтверждаем предоплату
-    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
-    
-    
-@dp.message_handler(lambda message: message.text == "🎁 Попробуй бесплатно")
-async def handle_trial(message: types.Message):
-    user_id = message.chat.id
+@dp.callback_query_handler(lambda c: c.data == "pay_yookassa")
+async def send_yookassa_invoice(callback_query: types.CallbackQuery):
+    """
+    Обработчик оплаты через Юкасса.
+    """
+    prices = [LabeledPrice(label="Подписка на 1 месяц", amount=10000)]  # Цена в копейках
+    await bot.send_invoice(
+        chat_id=callback_query.message.chat.id,
+        title="Подписка на сервис",
+        description="Описание товара или услуги, например, подписка на 1 месяц",
+        payload="subscription_payload",
+        provider_token=PROVIDER_TOKEN,
+        currency=CURRENCY,
+        prices=prices,
+        start_parameter="yookassa-payment"
+    )
+    await callback_query.answer()
 
-    if db.has_used_trial(user_id):
-        # Пользователь уже использовал бесплатный конфиг
-        await message.answer("Вы уже использовали бесплатный пробный конфиг. Отправляю ваш ранее выданный конфиг.")
-        user_config = db.get_user_config(user_id)
-        if user_config:
-            await message.answer_document(InputFile(io.BytesIO(user_config), filename="trial.ovpn"))
-        else:
-            await message.answer("Ошибка при получении вашего конфига.")
-        return
-    # container_id = None
-    
+@dp.callback_query_handler(lambda c: c.data == "pay_stars")
+async def send_stars_invoice(callback_query: types.CallbackQuery):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("Оплатить", pay=True))
+
+    title = "Подписка через Telegram Stars"
+    prices = [LabeledPrice(label="XTR", amount=2)]
+
+    await bot.send_invoice(
+        chat_id=callback_query.from_user.id,
+        title=title,
+        description="Поддержка проекта через Telegram Stars",
+        payload="channel_support",
+        provider_token="",  # Telegram Stars не требует токена
+        currency="XTR",
+        prices=prices,
+        reply_markup=keyboard
+    )
+    await callback_query.answer()
+
+
+@dp.callback_query_handler(lambda c: c.data in ["admin_create_container", "try_free"])
+async def handle_create_container(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    command = callback_query.data  # Определяем, какая команда вызвана
 
     try:
-        container_suffix = get_unique_random_number_in_range(1, 100)
-        port_443 = get_unique_random_number_in_range(5000, 6000)
-        port_943 = get_unique_random_number_in_range(7000, 8000)
-        port_1194_udp = get_unique_random_number_in_range(8000, 9000)
+        # Проверяем, является ли пользователь администратором
+        is_admin = command == "admin_create_container" and db.is_admin(user_id)
+
+        # Генерация уникальных параметров для контейнера
+        container_suffix = random.randint(1, 100)
+        port_443 = random.randint(5000, 6000)
+        port_943 = random.randint(7000, 8000)
+        port_1194_udp = random.randint(8000, 9000)
+
+        # Запуск контейнера
         container = await backend.run_openvpn_container(container_suffix, port_443, port_943, port_1194_udp)
-        if container is None:
-            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
+        if not container:
+            await callback_query.message.answer("Ошибка при создании контейнера.")
             return
 
-        container_id = container.short_id
-
-        # Schedule container deletion after 20 minutes
-        scheduler.add_job(backend.delete_container, 'date', run_date=datetime.now() + timedelta(minutes=20), args=[container_id, user_id])
-
-        # Wait for the container service to start
-        # await asyncio.sleep(15)  # Adjust as necessary
-
-        config = await backend.create_openvpn_config(container_id)
-        if config is None:
-            await message.answer("Произошла ошибкаюПовторите попытку позже или обратитесь в поддержку.")
+        # Получаем пароль из логов контейнера
+        password = await backend.parse_container_logs_for_password(container.id)
+        if not password:
+            await callback_query.message.answer("Не удалось получить пароль контейнера.")
             return
 
-        # Save the config in the database and mark the user as having used the free config
-        db.add_user(user_id, container_id, datetime.now() + timedelta(minutes=20), config)
+        # Генерация конфигурации OpenVPN
+        config = await backend.create_openvpn_config(container.id)
+        if not config:
+            await callback_query.message.answer("Ошибка при генерации конфигурации.")
+            return
 
-        await message.answer_document(InputFile(io.BytesIO(config), filename="trial.ovpn"))
-        await message.answer("Попробуйте наш пробный доступ в течении 3 часов на любом устройстве")
-    
+        # Настройка времени истечения доступа
+        if is_admin:
+            expiry_time = datetime.max  # Для администратора — без ограничения
+            success_message = "Контейнер успешно создан. Конфигурация сгенерирована!"
+        else:
+            expiry_time = datetime.now() + timedelta(minutes=20)  # Пробный доступ — 20 минут
+            success_message = "Пробный контейнер создан. Конфигурация сгенерирована на 20 минут."
+
+        # Сохраняем данные о пользователе и контейнере в базу
+        db.add_user(user_id, container.id, password, expiry_time.strftime('%Y-%m-%d %H:%M:%S'), config)
+
+        # Планируем удаление контейнера для пробного доступа
+        if not is_admin:
+            scheduler.add_job(
+                backend.delete_container,
+                'date',
+                run_date=expiry_time,
+                args=[container.id, user_id]
+            )
+
+        # Отправляем конфигурацию пользователю
+        await callback_query.message.answer_document(
+            InputFile(io.BytesIO(config), filename="container.ovpn")
+        )
+        await callback_query.message.answer(success_message)
     except Exception as e:
-        print(f"Error creating container: {e}")
-        await message.answer("An error occurred while creating the container.")
-        return
+        print(f"Error in handle_create_container: {e}")
+        await callback_query.message.answer("Произошла ошибка. Попробуйте позже.")
 
-    
-@dp.message_handler(lambda message: message.text == "ℹ️ FAQ")
-async def handle_faq(message: types.Message):
-    faq_text = """
-    ❓ FAQ:
-    1. Как настроить наш VPN на телефоне?
-    - Скачайте приложение OpenVPN на ваше мобильное устройство из Google play или AppStore
-       https://apps.apple.com/ru/app/openvpn-connect-openvpn-app/id590379981
-       https://play.google.com/store/apps/developer?id=OpenVPN
-    - Импортируйте конфиг в приложение и запустите, ввод логина и пароля не требуется 
-    4. Можно ли настроить наш VPN на роутре?
-    - Да, можно. Ключевой особенностью нашего сервиса является простая настройка на роутерах keenetic
-    3. Сколько стоит наш VPN?
-    - 1 месяц - 300 рублей
-    - 6 месяцев - 1700 рублей
-    - 1 год - 3450 рублей
 
-    4. Есть ли бесплатный пробный период?
-    - Да, вы можете получить бесплатный пробный дотсуп на 3 часа 
+@dp.callback_query_handler(lambda c: c.data == "admin_panel")
+async def handle_admin_panel(callback_query: types.CallbackQuery):
     """
-    await message.answer(faq_text)
+    Обработчик админ-панели.
+    """
+    user_id = callback_query.from_user.id
+    if db.is_admin(user_id):
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
+            InlineKeyboardButton("🚀 Выпустить контейнер", callback_data="admin_create_container"),
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+        )
+        await callback_query.message.answer("Админ-панель:", reply_markup=markup)
+    else:
+        await callback_query.message.answer("У вас нет прав доступа к админ-панели.")
+    await callback_query.answer()
 
-async def handle_support(message: types.Message):
-    support_text = "Если возникли проблемы напишите в поддержку @PerryPetr"
-    await message.answer(support_text)
-
-if __name__ == "__main__":
+async def on_startup(dispatcher):
+    """
+    Инициализация при старте бота.
+    """
     db.init_db()
-    executor.start_polling(dp)
+    print("База данных инициализирована.")
+
+@dp.pre_checkout_query_handler(lambda query: True)
+async def pre_checkout_handler(pre_checkout_query: PreCheckoutQuery):
+    await pre_checkout_query.bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+    
+if __name__ == "__main__":
+    executor.start_polling(dp, on_startup=on_startup)
