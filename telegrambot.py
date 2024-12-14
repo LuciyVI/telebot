@@ -189,7 +189,8 @@ async def handle_create_container(callback_query: types.CallbackQuery):
             success_message = "Пробный контейнер создан. Конфигурация сгенерирована на 20 минут."
 
         # Сохраняем данные о пользователе и контейнере в базу
-        db.add_user(user_id, container.id, password, expiry_time.strftime('%Y-%m-%d %H:%M:%S'), config)
+        db.add_user_safe(user_id, container.id, password, expiry_time.strftime('%Y-%m-%d %H:%M:%S'), config)
+
 
         # Планируем удаление контейнера для пробного доступа
         if not is_admin:

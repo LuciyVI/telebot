@@ -91,6 +91,43 @@ def update_user(user_id, container_id, password, expiry_time, config):
     conn.commit()
     conn.close()
 
+def add_user_safe(user_id, container_id, password, expiry_time, config):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    
+    # Проверка, существует ли пользователь
+    cursor.execute('SELECT user_id FROM users WHERE user_id = ?', (user_id,))
+    if cursor.fetchone():
+        print(f"Пользователь с user_id {user_id} уже существует.")
+        conn.close()
+        return False  # Или обновите пользователя, если необходимо
+    
+    # Если пользователя нет, добавляем его
+    cursor.execute('''
+        INSERT INTO users (user_id, container_id, password, expiry_time, config)
+        VALUES (?, ?, ?, ?, ?)
+    ''', (user_id, container_id, password, expiry_time, config))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def upsert_user(user_id, container_id, password, expiry_time, config):
+    conn = sqlite3.connect(DATABASE)
+    cursor = conn.cursor()
+    
+    cursor.execute('''
+        INSERT INTO users (user_id, container_id, password, expiry_time, config)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+            container_id = excluded.container_id,
+            password = excluded.password,
+            expiry_time = excluded.expiry_time,
+            config = excluded.config
+    ''', (user_id, container_id, password, expiry_time, config))
+    
+    conn.commit()
+    conn.close()
 
 def delete_user(user_id):
     """
