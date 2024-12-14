@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 
 import db  # Взаимодействие с базой данных
 import backend  # Управление контейнерами и конфигурацией
-
+import backup
 # Отключение предупреждений urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -65,6 +65,31 @@ async def send_welcome(message: types.Message):
     user_id = message.from_user.id
     await message.answer("Добро пожаловать! Выберите действие:", reply_markup=main_menu(user_id))
 
+@dp.callback_query_handler(lambda c: c.data == "select_container_backup")
+async def handle_select_container_backup(callback_query: types.CallbackQuery):
+    """
+    Выбор конкретного контейнера для бэкапа.
+    """
+    try:
+        client = docker.from_env()
+        containers = client.containers.list()
+        markup = InlineKeyboardMarkup(row_width=1)
+
+        # Используем сокращенные идентификаторы контейнеров
+        for container in containers:
+            # Укоротим callback_data до "backup_<короткий ID контейнера>"
+            markup.add(InlineKeyboardButton(
+                container.name, 
+                callback_data=f"backup_{container.short_id}"
+            ))
+
+        markup.add(InlineKeyboardButton("⬅️ Назад", callback_data="admin_backups"))
+
+        await callback_query.message.answer("Выберите контейнер для бэкапа:", reply_markup=markup)
+    except Exception as e:
+        print(f"Ошибка при выборе контейнера для бэкапа: {e}")
+        await callback_query.message.answer("Произошла ошибка при загрузке списка контейнеров.")
+    await callback_query.answer()
 
 @dp.callback_query_handler(lambda c: c.data == "buy_config")
 async def send_payment_options(callback_query: types.CallbackQuery):
@@ -193,11 +218,130 @@ async def handle_admin_panel(callback_query: types.CallbackQuery):
         markup.add(
             InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
             InlineKeyboardButton("🚀 Выпустить контейнер", callback_data="admin_create_container"),
+            InlineKeyboardButton("🗂 Бекапы", callback_data="admin_backups"),
             InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
         )
         await callback_query.message.answer("Админ-панель:", reply_markup=markup)
     else:
         await callback_query.message.answer("У вас нет прав доступа к админ-панели.")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "admin_stats")
+async def handle_admin_stats(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Статистика" в админ-панели.
+    """
+    try:
+        client = docker.from_env()
+        containers = client.containers.list()
+
+        stats_message = []
+        for container in containers:
+            # Получение общей информации о контейнере
+            name = container.name
+            status = container.status
+
+            # Получение статистики по дисковому и сетевому использованию
+            stats = container.stats(stream=False)
+            disk_io = stats['blkio_stats']['io_service_bytes_recursive']
+            disk_usage = sum(item['value'] for item in disk_io if 'value' in item)
+
+            network_stats = stats['networks']
+            network_usage = sum(interface['rx_bytes'] + interface['tx_bytes'] for interface in network_stats.values())
+
+            stats_message.append(f"{name}:\n  Статус: {status}\n  Использование диска: {disk_usage} байт\n  Сетевая нагрузка: {network_usage} байт")
+
+        if not stats_message:
+            stats_message = ["Нет запущенных контейнеров."]
+
+        await callback_query.message.answer("\n\n".join(stats_message))
+    except Exception as e:
+        print(f"Ошибка при получении статистики контейнеров: {e}")
+        await callback_query.message.answer("Произошла ошибка при получении статистики.")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "admin_backups")
+async def handle_admin_backups(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Бекапы" в админ-панели.
+    """
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("🔄 Восстановить все контейнеры", callback_data="restore_all_containers"),
+        InlineKeyboardButton("💾 Забекапить все контейнеры", callback_data="backup_all_containers"),
+        InlineKeyboardButton("📦 Выбрать контейнер для бэкапа", callback_data="select_container_backup"),
+        InlineKeyboardButton("⬅️ Назад", callback_data="admin_panel")
+    )
+    await callback_query.message.answer("Выберите действие с бэкапами:", reply_markup=markup)
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "restore_all_containers")
+async def handle_restore_all_containers(callback_query: types.CallbackQuery):
+    """
+    Восстановление всех контейнеров.
+    """
+    try:
+        # Здесь должна быть логика восстановления всех контейнеров
+        await callback_query.message.answer("Все контейнеры успешно восстановлены.")
+    except Exception as e:
+        print(f"Ошибка при восстановлении контейнеров: {e}")
+        await callback_query.message.answer("Произошла ошибка при восстановлении контейнеров.")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data == "backup_all_containers")
+async def handle_backup_all_containers(callback_query: types.CallbackQuery):
+    """
+    Создание бэкапов всех контейнеров.
+    """
+    try:
+        backup_dir = "./backups"
+        backup.backup_all_containers(backup_dir)
+        await callback_query.message.answer("Бэкапы всех контейнеров успешно созданы.")
+    except Exception as e:
+        print(f"Ошибка при создании бэкапов: {e}")
+        await callback_query.message.answer("Произошла ошибка при создании бэкапов.")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("backup_"))
+async def handle_backup_specific_container(callback_query: types.CallbackQuery):
+    """
+    Бэкап конкретного контейнера.
+    """
+    try:
+        short_id = callback_query.data.split("backup_")[1]  # Извлечение короткого ID контейнера
+        client = docker.from_env()
+        
+        # Поиск контейнера по короткому ID
+        container = next((c for c in client.containers.list() if c.short_id == short_id), None)
+        if not container:
+            await callback_query.message.answer("Контейнер не найден.")
+            return
+        
+        container_id = container.id  # Получение полного ID контейнера
+        backup_dir = "./backups"
+        
+        # Логика бэкапа
+        backup.backup_container(container_id, f"{backup_dir}/{container_id}_backup.tar")
+        await callback_query.message.answer(f"Контейнер {container.name} успешно забекапен.")
+    except Exception as e:
+        print(f"Ошибка при бэкапе контейнера: {e}")
+        await callback_query.message.answer("Произошла ошибка при создании бэкапа контейнера.")
+    await callback_query.answer()
+
+@dp.callback_query_handler(lambda c: c.data.startswith("backup_"))
+async def handle_backup_specific_container(callback_query: types.CallbackQuery):
+    """
+    Бэкап конкретного контейнера.
+    """
+    try:
+        short_id = callback_query.data.split("backup_")[1]  # Извлечение короткого ID контейнера
+        container_id = backup.get_full_container_id(short_id)  # Замените на логику для получения полного ID, если требуется
+        backup_dir = "./backups"
+        backup.backup_container(container_id, f"{backup_dir}/{container_id}_backup.tar")
+        await callback_query.message.answer(f"Контейнер {container_id} успешно забекапен.")
+    except Exception as e:
+        print(f"Ошибка при бэкапе контейнера {container_id}: {e}")
+        await callback_query.message.answer("Произошла ошибка при создании бэкапа контейнера.")
     await callback_query.answer()
 
 async def on_startup(dispatcher):

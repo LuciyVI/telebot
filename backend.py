@@ -111,6 +111,29 @@ async def get_running_containers_info(type_info):
 
     return containers_info
 
+def get_full_container_id(short_id):
+    """
+    Получает полный идентификатор контейнера по его сокращенному ID.
+    
+    :param short_id: Сокращенный ID контейнера.
+    :return: Полный ID контейнера или None, если контейнер не найден.
+    """
+    client = docker.from_env()
+    try:
+        # Получение списка всех контейнеров
+        containers = client.containers.list(all=True)
+        
+        # Поиск контейнера с соответствующим коротким ID
+        for container in containers:
+            if container.short_id == short_id:
+                return container.id  # Возвращаем полный ID контейнера
+        
+        # Если контейнер не найден
+        print(f"Контейнер с коротким ID {short_id} не найден.")
+        return None
+    except Exception as e:
+        print(f"Ошибка при получении полного идентификатора контейнера: {e}")
+        return None
 
 async def parse_container_logs_for_password(container_id):
     """
