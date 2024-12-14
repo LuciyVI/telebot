@@ -19,6 +19,9 @@ from datetime import datetime, timedelta
 import db  # Взаимодействие с базой данных
 import backend  # Управление контейнерами и конфигурацией
 import backup
+from aiogram.types import ChatActions
+from backend import wait_with_progress_bar  # Импорт функции прогресс-бара
+
 # Отключение предупреждений urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -206,6 +209,15 @@ async def handle_create_container(callback_query: types.CallbackQuery):
         print(f"Error in handle_create_container: {e}")
         await callback_query.message.answer("Произошла ошибка. Попробуйте позже.")
 
+@dp.callback_query_handler(lambda c: c.data == "main_menu")
+async def handle_main_menu(callback_query: types.CallbackQuery):
+    """
+    Обработчик кнопки "Назад" для возврата в главное меню.
+    """
+    user_id = callback_query.from_user.id
+    await callback_query.message.edit_text("Добро пожаловать! Выберите действие:", reply_markup=main_menu(user_id))
+    await callback_query.answer()
+
 
 @dp.callback_query_handler(lambda c: c.data == "admin_panel")
 async def handle_admin_panel(callback_query: types.CallbackQuery):
@@ -219,9 +231,9 @@ async def handle_admin_panel(callback_query: types.CallbackQuery):
             InlineKeyboardButton("📊 Статистика", callback_data="admin_stats"),
             InlineKeyboardButton("🚀 Выпустить контейнер", callback_data="admin_create_container"),
             InlineKeyboardButton("🗂 Бекапы", callback_data="admin_backups"),
-            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")
+            InlineKeyboardButton("⬅️ Назад", callback_data="main_menu")  # Изменено
         )
-        await callback_query.message.answer("Админ-панель:", reply_markup=markup)
+        await callback_query.message.edit_text("Админ-панель:", reply_markup=markup)
     else:
         await callback_query.message.answer("У вас нет прав доступа к админ-панели.")
     await callback_query.answer()
