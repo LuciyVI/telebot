@@ -26,8 +26,8 @@ import db,backend
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-TOKEN = '7445572746:AAEOT9AhdvBuT1QyiEC90rVRfEMvBjbAmzI'  # Замените на ваш токен
-PROVIDER_TOKEN = '381764678:TEST:95954'
+TOKEN = ''  # Замените на ваш токен
+PROVIDER_TOKEN = ''
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher(bot)
